@@ -16,12 +16,12 @@
 
 package org.quiltmc.qsl.command.api.client;
 
-import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.ArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.builder.RequiredArgumentBuilder;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
+import org.quiltmc.qsl.command.impl.client.ClientCommandInternals;
 
 /**
  * Manages client-sided commands and provides some related helper methods, analogous to
@@ -57,10 +57,7 @@ import net.fabricmc.api.Environment;
  */
 @Environment(EnvType.CLIENT)
 public final class ClientCommandManager {
-	/**
-	 * The command dispatcher that handles client command registration and execution.
-	 */
-	public static final CommandDispatcher<QuiltClientCommandSource> DISPATCHER = new CommandDispatcher<>();
+	public static final char DEFAULT_PREFIX = ClientCommandInternals.DEFAULT_PREFIX;
 
 	private ClientCommandManager() {
 	}

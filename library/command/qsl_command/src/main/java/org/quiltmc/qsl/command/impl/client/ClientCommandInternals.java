@@ -16,7 +16,6 @@
 
 package org.quiltmc.qsl.command.impl.client;
 
-import com.google.common.collect.Iterables;
 import com.mojang.brigadier.AmbiguityConsumer;
 import com.mojang.brigadier.Command;
 import com.mojang.brigadier.CommandDispatcher;
@@ -43,7 +42,7 @@ import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.jetbrains.annotations.ApiStatus;
-import org.quiltmc.qsl.command.api.client.ClientCommandManager;
+import org.quiltmc.qsl.base.api.event.ArrayEvent;
 import org.quiltmc.qsl.command.api.client.ClientCommandRegistrationCallback;
 import org.quiltmc.qsl.command.api.client.QuiltClientCommandSource;
 import org.quiltmc.qsl.command.mixin.HelpCommandAccessor;
@@ -51,16 +50,33 @@ import org.quiltmc.qsl.command.mixin.HelpCommandAccessor;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
-import static org.quiltmc.qsl.command.api.client.ClientCommandManager.*;
+import static org.quiltmc.qsl.command.api.client.ClientCommandManager.argument;
+import static org.quiltmc.qsl.command.api.client.ClientCommandManager.literal;
 
 @Environment(EnvType.CLIENT)
 @ApiStatus.Internal
 public final class ClientCommandInternals {
+	public static final char DEFAULT_PREFIX = '/';
+
 	private static final Logger LOGGER = LogManager.getLogger();
-	private static final char PREFIX = '/';
 	private static final String API_COMMAND_NAME = "quilt_commands:client_commands";
 	private static final String SHORT_API_COMMAND_NAME = "qcc";
+	private static final Map<Character, ArrayEvent<ClientCommandRegistrationCallback>> EVENTS = new HashMap<>();
+	private static final Map<Character, CommandDispatcher<QuiltClientCommandSource>> DISPATCHERS = new HashMap<>();
+
+	public static ArrayEvent<ClientCommandRegistrationCallback> event(char prefix) {
+		if (isInvalidCommandPrefix(prefix)) {
+			throw new IllegalArgumentException("Command prefix '" + prefix + "' cannot be a letter, a digit or whitespace!");
+		}
+
+		return EVENTS.computeIfAbsent(prefix, c -> ArrayEvent.create(ClientCommandRegistrationCallback.class, callbacks -> dispatcher -> {
+			for (ClientCommandRegistrationCallback callback : callbacks) {
+				callback.registerCommands(dispatcher);
+			}
+		}));
+	}
 
 	/**
 	 * Executes a client-sided command from a message.
@@ -75,7 +91,10 @@ public final class ClientCommandInternals {
 			return false; // Nothing to process
 		}
 
-		if (message.charAt(0) != PREFIX) {
+		char commandPrefix = message.charAt(0);
+		var dispatcher = DISPATCHERS.get(commandPrefix);
+
+		if (dispatcher == null) {
 			return false; // Incorrect prefix, won't execute anything.
 		}
 
@@ -88,15 +107,20 @@ public final class ClientCommandInternals {
 		client.getProfiler().push(message);
 
 		try {
-			// Only run client commands if there are no matching server-side commands.
 			String command = message.substring(1);
-			CommandDispatcher<CommandSource> serverDispatcher = client.getNetworkHandler().getCommandDispatcher();
-			ParseResults<CommandSource> serverResults = serverDispatcher.parse(command, client.getNetworkHandler().getCommandSource());
-			if (serverResults.getReader().canRead() || isCommandInvalidOrDummy(serverResults)) {
-				DISPATCHER.execute(command, commandSource);
-				return true;
+			if (commandPrefix == '/') {
+				// Only run client commands if there are no matching server-side commands.
+				CommandDispatcher<CommandSource> serverDispatcher = client.getNetworkHandler().getCommandDispatcher();
+				ParseResults<CommandSource> serverResults = serverDispatcher.parse(command, client.getNetworkHandler().getCommandSource());
+				if (serverResults.getReader().canRead() || isCommandInvalidOrDummy(serverResults)) {
+					dispatcher.execute(command, commandSource);
+					return true;
+				} else {
+					return false;
+				}
 			} else {
-				return false;
+				dispatcher.execute(command, commandSource);
+				return true;
 			}
 		} catch (CommandSyntaxException e) {
 			boolean ignored = isIgnoredException(e.getType());
@@ -124,7 +148,7 @@ public final class ClientCommandInternals {
 	/**
 	 * Tests whether a parse result is invalid or the command it resolves to is a dummy command.
 	 *
-	 * Used to work out whether a command in the main dispatcher is a dummy command added by {@link ClientCommandInternals#addCommands(CommandDispatcher, QuiltClientCommandSource)}.
+	 * Used to work out whether a command in the main dispatcher is a dummy command added by {@link ClientCommandInternals#copyCommands(char, CommandDispatcher, QuiltClientCommandSource)}.
 	 *
 	 * @param parse the parse results to test.
 	 * @param <S> 	the command source type.
@@ -172,22 +196,29 @@ public final class ClientCommandInternals {
 	 * a {@code /qcc help} command if there are other commands present.
 	 */
 	public static void initialize() {
-		ClientCommandRegistrationCallback.EVENT.invoker().registerCommands(DISPATCHER);
+		for (char prefix : EVENTS.keySet()) {
+			CommandDispatcher<QuiltClientCommandSource> dispatcher = new CommandDispatcher<>();
+			addCommands(prefix, dispatcher);
+			// noinspection CodeBlock2Expr
+			dispatcher.findAmbiguities((parent, child, sibling, inputs) -> {
+				LOGGER.warn("Ambiguity between arguments {} and {} with inputs: {} (client-side command prefix: {})", dispatcher.getPath(child), dispatcher.getPath(sibling), inputs, prefix);
+			});
+			DISPATCHERS.put(prefix, dispatcher);
+		}
 
-		if (!DISPATCHER.getRoot().getChildren().isEmpty()) {
+		if (DISPATCHERS.values().stream().noneMatch(dispatcher -> dispatcher.getRoot().getChildren().isEmpty())) {
 			// Register the qcc command only if there are other commands;
 			// it is not needed if there are no client commands.
-			CommandNode<QuiltClientCommandSource> mainNode = DISPATCHER.register(
+			CommandNode<QuiltClientCommandSource> mainNode = getDefaultDispatcher().register(
 					literal(API_COMMAND_NAME)
 							.then(createHelpCommand())
 							.then(createRunCommand())
 			);
-			DISPATCHER.register(literal(SHORT_API_COMMAND_NAME).redirect(mainNode));
+			getDefaultDispatcher().register(literal(SHORT_API_COMMAND_NAME).redirect(mainNode));
+			getDefaultDispatcher().findAmbiguities((parent, child, sibling, inputs) ->
+					LOGGER.warn("Ambiguity between arguments {} and {} with inputs: {}", getDefaultDispatcher().getPath(child), getDefaultDispatcher().getPath(sibling), inputs)
+			);
 		}
-
-		DISPATCHER.findAmbiguities((parent, child, sibling, inputs) ->
-				LOGGER.warn("Ambiguity between arguments {} and {} with inputs: {}", DISPATCHER.getPath(child), DISPATCHER.getPath(sibling), inputs)
-		);
 	}
 
 	private static LiteralArgumentBuilder<QuiltClientCommandSource> createHelpCommand() {
@@ -200,25 +231,29 @@ public final class ClientCommandInternals {
 	}
 
 	private static int executeRootHelp(CommandContext<QuiltClientCommandSource> context) {
-		return executeHelp(DISPATCHER.getRoot(), context);
+		return executeHelp(context);
 	}
 
 	private static int executeSpecificHelp(CommandContext<QuiltClientCommandSource> context) throws CommandSyntaxException {
-		ParseResults<QuiltClientCommandSource> parseResults = DISPATCHER.parse(StringArgumentType.getString(context, "command"), context.getSource());
+		String command = StringArgumentType.getString(context, "command");
+		char prefix = isInvalidCommandPrefix(command.charAt(0)) ? DEFAULT_PREFIX : command.charAt(0);
+		ParseResults<QuiltClientCommandSource> parseResults = DISPATCHERS.get(prefix).parse(command.substring(1), context.getSource());
 		List<ParsedCommandNode<QuiltClientCommandSource>> nodes = parseResults.getContext().getNodes();
 
 		if (nodes.isEmpty()) {
 			throw HelpCommandAccessor.getFailedException().create();
 		}
 
-		return executeHelp(Iterables.getLast(nodes).getNode(), context);
+		return executeHelp(context);
 	}
 
-	private static int executeHelp(CommandNode<QuiltClientCommandSource> startNode, CommandContext<QuiltClientCommandSource> context) {
-		Map<CommandNode<QuiltClientCommandSource>, String> commands = DISPATCHER.getSmartUsage(startNode, context.getSource());
+	private static int executeHelp(CommandContext<QuiltClientCommandSource> context) {
+		List<String> commands = DISPATCHERS.entrySet().stream()
+				.map(entry -> entry.getKey().toString() + entry.getValue().getSmartUsage(entry.getValue().getRoot(), context.getSource()))
+				.collect(Collectors.toList());
 
-		for (String command : commands.values()) {
-			context.getSource().sendFeedback(new LiteralText(PREFIX + command));
+		for (String command : commands) {
+			context.getSource().sendFeedback(new LiteralText(command));
 		}
 
 		return commands.size();
@@ -226,16 +261,24 @@ public final class ClientCommandInternals {
 
 	private static LiteralArgumentBuilder<QuiltClientCommandSource> createRunCommand() {
 		LiteralArgumentBuilder<QuiltClientCommandSource> runCommand = literal("run");
-		for (CommandNode<QuiltClientCommandSource> node : ClientCommandManager.DISPATCHER.getRoot().getChildren()) {
+		for (CommandNode<QuiltClientCommandSource> node : DISPATCHERS.get(DEFAULT_PREFIX).getRoot().getChildren()) {
 			runCommand.then(node);
 		}
 		return runCommand;
 	}
 
-	public static void addCommands(CommandDispatcher<QuiltClientCommandSource> target, QuiltClientCommandSource source) {
+	public static void addCommands(char prefix, CommandDispatcher<QuiltClientCommandSource> dispatcher) {
+		ArrayEvent<ClientCommandRegistrationCallback> event = EVENTS.get(prefix);
+
+		if (event != null) {
+			event.invoker().registerCommands(dispatcher);
+		}
+	}
+
+	public static void copyCommands(char prefix, CommandDispatcher<QuiltClientCommandSource> target, QuiltClientCommandSource source) {
 		Map<CommandNode<QuiltClientCommandSource>, CommandNode<QuiltClientCommandSource>> originalToCopy = new HashMap<>();
-		originalToCopy.put(DISPATCHER.getRoot(), target.getRoot());
-		copyChildren(DISPATCHER.getRoot(), target.getRoot(), source, originalToCopy);
+		originalToCopy.put(DISPATCHERS.get(prefix).getRoot(), target.getRoot());
+		copyChildren(DISPATCHERS.get(prefix).getRoot(), target.getRoot(), source, originalToCopy);
 	}
 
 	/**
@@ -283,6 +326,18 @@ public final class ClientCommandInternals {
 				copyChildren(child, result, source, originalToCopy);
 			}
 		}
+	}
+
+	public static boolean isInvalidCommandPrefix(char prefix) {
+		return Character.isLetterOrDigit(prefix) || Character.isWhitespace(prefix);
+	}
+
+	public static boolean isPrefixUsed(char prefix) {
+		return EVENTS.containsKey(prefix);
+	}
+
+	private static CommandDispatcher<QuiltClientCommandSource> getDefaultDispatcher() {
+		return DISPATCHERS.get(DEFAULT_PREFIX);
 	}
 
 	private static final Command<QuiltClientCommandSource> DUMMY_COMMAND = ctx -> 0;

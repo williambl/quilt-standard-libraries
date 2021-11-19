@@ -61,7 +61,7 @@ public class CommandApiTest implements ModInitializer {
 			);
 		});
 
-		ClientCommandRegistrationCallback.EVENT.register(dispatcher -> {
+		ClientCommandRegistrationCallback.event().register(dispatcher -> {
 			dispatcher.register(
 					ClientCommandManager.literal("test_client_command")
 							.executes(ctx -> {
@@ -74,6 +74,24 @@ public class CommandApiTest implements ModInitializer {
 					ClientCommandManager.literal("overrideme")
 							.executes(ctx -> {
 								ctx.getSource().sendFeedback(new LiteralText("Client!"));
+								return 0;
+							})
+			);
+		});
+
+		ClientCommandRegistrationCallback.event('#').register(dispatcher -> {
+			dispatcher.register(
+					ClientCommandManager.literal("test_other_prefix")
+							.executes(ctx -> {
+								ctx.getSource().sendFeedback(new LiteralText("Prefix works!"));
+								return 0;
+							})
+			);
+
+			dispatcher.register(
+					ClientCommandManager.literal("overrideme")
+							.executes(ctx -> {
+								ctx.getSource().sendFeedback(new LiteralText("Should never be overriden, different prefix"));
 								return 0;
 							})
 			);

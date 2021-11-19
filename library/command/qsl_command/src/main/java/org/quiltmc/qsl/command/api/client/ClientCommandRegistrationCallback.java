@@ -20,6 +20,7 @@ import com.mojang.brigadier.CommandDispatcher;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import org.quiltmc.qsl.base.api.event.ArrayEvent;
+import org.quiltmc.qsl.command.impl.client.ClientCommandInternals;
 
 /**
  * Event for registering client-side commands.
@@ -30,13 +31,25 @@ import org.quiltmc.qsl.base.api.event.ArrayEvent;
 @Environment(EnvType.CLIENT)
 public interface ClientCommandRegistrationCallback {
 	/**
-	 * Invoked when client-side commands are registered.
+	 * Gets the command registration event for commands with the {@code /} prefix.
+	 *
+	 * @return the event object
 	 */
-	ArrayEvent<ClientCommandRegistrationCallback> EVENT = ArrayEvent.create(ClientCommandRegistrationCallback.class, callbacks -> dispatcher -> {
-		for (var callback : callbacks) {
-			callback.registerCommands(dispatcher);
-		}
-	});
+	static ArrayEvent<ClientCommandRegistrationCallback> event() {
+		return event(ClientCommandManager.DEFAULT_PREFIX);
+	}
+
+	/**
+	 * Gets the command registration event with a custom command prefix.
+	 *
+	 * @param prefix the command prefix
+	 * @return the event object
+	 * @throws IllegalArgumentException if the prefix {@linkplain Character#isLetterOrDigit(char) is a letter or a digit},
+	 *                                  or if it {@linkplain Character#isWhitespace(char) is whitespace}.
+	 */
+	static ArrayEvent<ClientCommandRegistrationCallback> event(char prefix) {
+		return ClientCommandInternals.event(prefix);
+	}
 
 	/**
 	 * Called when client-side commands are registered.
